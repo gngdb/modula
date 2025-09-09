@@ -23,14 +23,51 @@ from modula.to_pytorch import flash_sequentialise
 # -----------------------------------------------------------------------------
 # Modula dualize utility function
 
-def dualize(model):
+class DualizeEMA(nn.Module):
     """
-    For all atomic modules, we need to run the dualize method before running
-    gradient descent.
+    Hack to implement the Muon EMA without changing the `dualize_gradients`
+    interface.  Stores an EMA in a buffer for every gradient, then runs each
+    module's associated `dualize_gradients()` after substituting in the EMA.
     """
-    for m in model.modules():
-        if hasattr(m, 'dualize_gradients'):
-            m.dualize_gradients()
+
+    def __init__(self, model, momentum=0.95):
+        super().__init__()
+        self.momentum = momentum
+        # Store momentum buffers for each parameter with dualize_gradients
+        self.momentum_buffers = {}
+        self._register_modules(model)
+
+    @torch.no_grad()
+    def _register_modules(self, model):
+        """Register all modules that have dualize_gradients method"""
+        for name, module in model.named_modules():
+            if hasattr(module, 'dualize_gradients'):
+                self.momentum_buffers[name] = {}
+                for param_name, param in module.named_parameters():
+                    if param.requires_grad:
+                        # Initialize momentum buffer to zeros
+                        self.momentum_buffers[name][param_name] = torch.zeros_like(param)
+
+    @torch.no_grad()
+    def forward(self, model):
+        """Apply EMA-smoothed dualization to gradients"""
+        # Update momentum buffers and apply dualization
+        for name, module in model.named_modules():
+            if hasattr(module, 'dualize_gradients') and name in self.momentum_buffers:
+                # First update momentum buffers for this module
+                for param_name, param in module.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        g = param.grad
+                        if param_name not in self.momentum_buffers[name]:
+                            self.momentum_buffers[name][param_name] = torch.zeros_like(g)
+                        buf = self.momentum_buffers[name][param_name]
+                        buf.mul_(self.momentum).add_(g)
+
+                        # Replace gradient with momentum buffer
+                        param.grad.copy_(buf)
+
+                # Now call dualize_gradients with momentum-buffered gradients
+                module.dualize_gradients()
 
 # -----------------------------------------------------------------------------
 # Modula definition for the GPT-2 model
@@ -64,7 +101,7 @@ def ModulaGPT(vocab_size, num_heads, d_embed, d_query, d_value, num_blocks, bloc
     embed = Embed(d_embed, vocab_size)
     embed.tare()
 
-    # Let's create attention and MLP layers. 
+    # Let's create attention and MLP layers.
     att = Attention(num_heads, d_embed, d_query, d_value, attention_scale)
     mlp = Linear(d_embed, 4*d_embed) @ GeLU() @ Linear(4*d_embed, d_embed)
 
@@ -251,10 +288,11 @@ model = torch.compile(model)
 # here we wrap model into DDP container
 model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module # always contains the "raw" unwrapped model
+dualize_ema = DualizeEMA(raw_model, momentum=args.momentum)
 ctx = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16)
 
 # init the optimizer(s)
-optimizer = torch.optim.SGD(raw_model.parameters(), lr=args.learning_rate, momentum=args.momentum, weight_decay=args.weight_decay)
+optimizer = torch.optim.SGD(raw_model.parameters(), lr=args.learning_rate)
 # learning rate decay scheduler (linear warmup and warmdown)
 def get_lr(it):
     assert it <= args.num_iterations
@@ -367,7 +405,7 @@ for step in range(args.num_iterations + 1):
     for p in model.parameters():
         p.grad /= train_accumulation_steps
     # step the optimizer and scheduler
-    dualize(raw_model)
+    dualize_ema(raw_model)
     optimizer.step()
     scheduler.step()
 
