@@ -45,8 +45,11 @@ class DualizeEMA(nn.Module):
                 self.momentum_buffers[name] = {}
                 for param_name, param in module.named_parameters():
                     if param.requires_grad:
-                        # Initialize momentum buffer to zeros
-                        self.momentum_buffers[name][param_name] = torch.zeros_like(param)
+                        # Initialize momentum buffer to zeros and register as buffer
+                        buffer_name = f"momentum_buffer_{name}_{param_name}".replace('.', '_')
+                        buffer = torch.zeros_like(param)
+                        self.register_buffer(buffer_name, buffer)
+                        self.momentum_buffers[name][param_name] = buffer
 
     @torch.no_grad()
     def forward(self, model):
@@ -58,8 +61,6 @@ class DualizeEMA(nn.Module):
                 for param_name, param in module.named_parameters():
                     if param.requires_grad and param.grad is not None:
                         g = param.grad
-                        if param_name not in self.momentum_buffers[name]:
-                            self.momentum_buffers[name][param_name] = torch.zeros_like(g)
                         buf = self.momentum_buffers[name][param_name]
                         buf.mul_(self.momentum).add_(g)
 
@@ -374,7 +375,7 @@ for step in range(args.num_iterations + 1):
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.time() - t0)
         # save the state of the training process
-        log = dict(step=step, code=code, model=raw_model.state_dict(), optimizer=optimizer.state_dict())
+        log = dict(step=step, code=code, model=raw_model.state_dict(), optimizer=optimizer.state_dict(), dualize_ema=dualize_ema.state_dict())
         torch.save(log, 'logs/%s/state_step%06d.pt' % (run_id, step))
         # start the clock again
         torch.cuda.synchronize()
