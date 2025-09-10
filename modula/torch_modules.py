@@ -79,7 +79,6 @@ class Embed(nn.Embedding):
         super().__init__(num_embed, d_embed, padding_idx=padding_idx)
         self.num_embed = num_embed
         self.d_embed = d_embed
-        self.sensitivity = 1
         self.register_buffer('target_norm', torch.tensor(target_norm, dtype=torch.float))
         
         # Initialize with normalized weights

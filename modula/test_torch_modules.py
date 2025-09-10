@@ -8,9 +8,9 @@ import jax.numpy as jnp
 import modula.atom
 import modula.bond
 
-from torch_modules import (orthogonalize, Linear, Embed, ReLU, GeLU, SplitIntoHeads, MergeHeads,
-                           AttentionQK, CausalMask, Softmax, ApplyAttentionScores,
-                           Rope)
+from torch_modules import (orthogonalize, Linear, Embed, ReLU, GeLU,
+                           SplitIntoHeads, MergeHeads, AttentionQK, CausalMask,
+                           Softmax, ApplyAttentionScores, Rope)
 
 def test_orthogonalize():
     """Test PyTorch implementation against JAX implementation"""
